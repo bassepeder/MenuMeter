@@ -13,14 +13,14 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.1</string>
+	<string>1.2</string>
 	<key>CFBundleVersion</key>
-	<string>2</string>
+	<string>3</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.2</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>MenuMeter measures the level of audio your Mac is playing to show it in the menu bar. Nothing is recorded or saved.</string>
+	<string>MenuMeter measures the audio your Mac plays to show it in the menu bar, and lets you change the volume of each app. Nothing is recorded or saved.</string>
 </dict>
 </plist>

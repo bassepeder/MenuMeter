@@ -9,7 +9,7 @@ import os
 
 // MARK: - Core Audio helpers
 
-private func getProperty<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ initial: T) -> T? {
+func getProperty<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ initial: T) -> T? {
     var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
     var value = initial
     var size = UInt32(MemoryLayout<T>.size)
@@ -17,11 +17,11 @@ private func getProperty<T>(_ object: AudioObjectID, _ selector: AudioObjectProp
     return err == noErr ? value : nil
 }
 
-private func defaultOutputDevice() -> AudioObjectID? {
+func defaultOutputDevice() -> AudioObjectID? {
     getProperty(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultSystemOutputDevice, AudioObjectID(kAudioObjectUnknown))
 }
 
-private func deviceUID(_ device: AudioObjectID) -> String? {
+func deviceUID(_ device: AudioObjectID) -> String? {
     getProperty(device, kAudioDevicePropertyDeviceUID, CFString?.none).flatMap { $0 as String? }
 }
 
@@ -38,6 +38,7 @@ final class SystemAudioTap {
     private var procID: AudioDeviceIOProcID?
     private let queue = DispatchQueue(label: "menumeter.tap")
     private var listener: AudioObjectPropertyListenerBlock?
+    private var excluded: [AudioObjectID] = []
 
     func start() {
         queue.async { self.restart() }
@@ -49,11 +50,21 @@ final class SystemAudioTap {
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue, block)
     }
 
+    /// Leaves these processes out of the meter. Apps whose volume MenuMeter controls are muted and
+    /// replayed by MenuMeter, so their original audio would otherwise be counted on top of the copy.
+    func exclude(_ processes: [AudioObjectID]) {
+        queue.async {
+            guard processes.sorted() != self.excluded else { return }
+            self.excluded = processes.sorted()
+            self.restart()
+        }
+    }
+
     private func restart() {
         stop()
         guard let output = defaultOutputDevice(), let outputUID = deviceUID(output) else { return }
 
-        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: excluded)
         description.uuid = UUID()
         description.muteBehavior = .unmuted
         description.isPrivate = true
@@ -180,9 +191,31 @@ enum MeterColor: String, CaseIterable {
         }
     }
 
+    /// The fill with the user's saturation and brightness applied.
+    func adjustedFill(dark: Bool) -> NSColor {
+        let base = fill(dark: dark)
+        guard let rgb = base.usingColorSpace(.sRGB) else { return base }
+        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
+        rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+        return NSColor(colorSpace: .sRGB, hue: hue,
+                       saturation: min(1, saturation * Self.saturation),
+                       brightness: min(1, brightness * Self.brightness), alpha: alpha)
+    }
+
     static var current: MeterColor {
         get { UserDefaults.standard.string(forKey: "color").flatMap(MeterColor.init) ?? .yellow }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "color") }
+    }
+
+    /// Multipliers for the fill's saturation and brightness; 1 leaves the colour as designed.
+    static var saturation: CGFloat {
+        get { UserDefaults.standard.object(forKey: "saturation") as? CGFloat ?? 1 }
+        set { UserDefaults.standard.set(newValue, forKey: "saturation") }
+    }
+
+    static var brightness: CGFloat {
+        get { UserDefaults.standard.object(forKey: "brightness") as? CGFloat ?? 1 }
+        set { UserDefaults.standard.set(newValue, forKey: "brightness") }
     }
 }
 
@@ -275,7 +308,7 @@ final class MeterView: NSView {
             let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             let track = dark ? NSColor.white.withAlphaComponent(0.88) : NSColor.black.withAlphaComponent(0.18)
             let color = MeterColor.current
-            let fill = color.fill(dark: dark)
+            let fill = color.adjustedFill(dark: dark)
             // A white peak line disappears against a white/mono fill, so contrast it there.
             let tick = color == .mono ? NSColor.gray : (dark ? NSColor.white : NSColor.black.withAlphaComponent(0.6))
             let hot = NSColor(srgbRed: 1.0, green: 0.36, blue: 0.25, alpha: 1)
@@ -302,10 +335,71 @@ final class MeterView: NSView {
     }
 }
 
+// MARK: - Menu rows
+
+/// A menu row with an optional icon, a title, a slider and its value in percent.
+final class SliderRow: NSView {
+    private let slider: NSSlider
+    private let valueLabel = NSTextField(labelWithString: "")
+    private let onChange: (Double) -> Void
+
+    init(title: String, icon: NSImage? = nil, value: Double, range: ClosedRange<Double>, onChange: @escaping (Double) -> Void) {
+        slider = NSSlider(value: value, minValue: range.lowerBound, maxValue: range.upperBound, target: nil, action: nil)
+        self.onChange = onChange
+        super.init(frame: NSRect(x: 0, y: 0, width: 310, height: 26))
+
+        var x: CGFloat = 20
+        if let icon {
+            let image = NSImageView(frame: NSRect(x: x, y: 5, width: 16, height: 16))
+            image.image = icon
+            addSubview(image)
+            x += 22
+        }
+        let label = NSTextField(labelWithString: title)
+        label.font = .menuFont(ofSize: 0)
+        label.lineBreakMode = .byTruncatingTail
+        label.frame = NSRect(x: x, y: 4, width: 150 - x, height: 17)
+        addSubview(label)
+
+        slider.frame = NSRect(x: 154, y: 3, width: 106, height: 20)
+        slider.controlSize = .small
+        slider.isContinuous = true
+        slider.target = self
+        slider.action = #selector(changed)
+        addSubview(slider)
+
+        valueLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        valueLabel.textColor = .secondaryLabelColor
+        valueLabel.alignment = .right
+        valueLabel.frame = NSRect(x: 264, y: 5, width: 38, height: 15)
+        addSubview(valueLabel)
+        showValue()
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func setValue(_ value: Double) {
+        slider.doubleValue = value
+        showValue()
+    }
+
+    @objc private func changed() {
+        showValue()
+        onChange(slider.doubleValue)
+    }
+
+    private func showValue() {
+        valueLabel.stringValue = "\(Int((slider.doubleValue * 100).rounded()))%"
+    }
+}
+
 // MARK: - App
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let tap = SystemAudioTap()
+    private let volumes = AppVolumes()
+    private var appRows: [NSMenuItem] = []     // the per-app volume section, rebuilt each time the menu opens
+    private var colorSliders: [SliderRow] = []
     private var statusItem: NSStatusItem!
     private let meter = MeterView(frame: .zero)
     private var timer: Timer?
@@ -331,6 +425,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.representedObject = color.rawValue
             colors.addItem(item)
         }
+        colors.addItem(.separator())
+        let saturation = SliderRow(title: "Saturation", value: MeterColor.saturation, range: 0...1.5) { [weak self] value in
+            MeterColor.saturation = value
+            self?.meter.needsDisplay = true
+        }
+        let brightness = SliderRow(title: "Brightness", value: MeterColor.brightness, range: 0.4...1.2) { [weak self] value in
+            MeterColor.brightness = value
+            self?.meter.needsDisplay = true
+        }
+        colorSliders = [saturation, brightness]
+        for row in colorSliders {
+            let item = NSMenuItem()
+            item.view = row
+            colors.addItem(item)
+        }
+        let reset = NSMenuItem(title: "Reset Saturation and Brightness", action: #selector(resetColorTweaks), keyEquivalent: "")
+        reset.target = self
+        colors.addItem(reset)
         let colorItem = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
         colorItem.submenu = colors
         menu.addItem(colorItem)
@@ -343,7 +455,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.delegate = self
         statusItem.menu = menu
 
+        volumes.tappedProcessesChanged = { [tap] processes in tap.exclude(processes) }
         tap.start()
+        volumes.start()
         setFrameRate(Self.activeRate)
     }
 
@@ -407,6 +521,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         meter.needsDisplay = true
     }
 
+    @objc private func resetColorTweaks() {
+        MeterColor.saturation = 1
+        MeterColor.brightness = 1
+        colorSliders.forEach { $0.setValue(1) }
+        meter.needsDisplay = true
+    }
+
+    /// Puts a volume slider at the top of the menu for each app that's playing sound right now.
+    private func rebuildAppRows(in menu: NSMenu) {
+        appRows.forEach(menu.removeItem)
+        appRows = [NSMenuItem.sectionHeader(title: "Volume")]
+        let playing = AudioApps.current().filter(\.isPlaying)
+        if playing.isEmpty {
+            let none = NSMenuItem(title: "No apps are playing", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            appRows.append(none)
+        }
+        for app in playing {
+            let item = NSMenuItem()
+            let key = app.key
+            item.view = SliderRow(title: app.name, icon: app.icon, value: Double(AppVolumes.volume(for: key)), range: 0...1) { [weak self] value in
+                self?.volumes.setVolume(Float(value), for: key)
+            }
+            appRows.append(item)
+        }
+        appRows.append(.separator())
+        for (index, item) in appRows.enumerated() { menu.insertItem(item, at: index) }
+    }
+
     @objc private func toggleSmooth(_ sender: NSMenuItem) {
         UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: "smooth"), forKey: "smooth")
         setFrameRate(Self.activeRate)
@@ -427,7 +570,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
-        menu.items.first?.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        rebuildAppRows(in: menu)
+        menu.items.first { $0.action == #selector(toggleLogin(_:)) }?.state =
+            SMAppService.mainApp.status == .enabled ? .on : .off
         menu.items.first { $0.action == #selector(toggleSmooth(_:)) }?.state =
             UserDefaults.standard.bool(forKey: "smooth") ? .on : .off
         let current = MeterColor.current.rawValue
