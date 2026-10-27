@@ -7,7 +7,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>MenuMeter</string>
 	<key>CFBundleIdentifier</key>
-	<string>local.menumeter</string>
+	<string>io.github.bassepeder.menumeter</string>
 	<key>CFBundleExecutable</key>
 	<string>MenuMeter</string>
 	<key>CFBundlePackageType</key>
