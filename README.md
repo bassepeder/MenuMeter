@@ -8,6 +8,7 @@ A tiny, free stereo level meter for the macOS menu bar. It shows how loud everyt
 - **No extra drivers** — uses the Core Audio process taps built into macOS 14.2+. Nothing like BlackHole or Loopback needed.
 - **Peak hold and clip lights** — a thin line marks each channel's recent peak, the tip of the bar glows orange-red above −4 dB, and the dot at the end lights red for two seconds when a channel hits 0 dB.
 - **Colours** — Yellow, Green, Blue, Pink, your system accent colour, or Monochrome. Adapts to light and dark menu bars.
+- **Light on resources** — about 2% of one CPU core while audio plays, close to nothing when it's silent, and around 15 MB of memory.
 - **Open at Login** — one click in the menu.
 - **Nothing is recorded** — audio is only measured to draw the meter, never stored or sent anywhere.
 
