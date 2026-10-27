@@ -7,8 +7,9 @@ A tiny, free stereo level meter for the macOS menu bar. It shows how loud everyt
 - **Whole-system audio** — meters every app at once, on whatever output you're using (speakers, headphones, AirPods). Switches automatically when you change output.
 - **No extra drivers** — uses the Core Audio process taps built into macOS 14.2+. Nothing like BlackHole or Loopback needed.
 - **Peak hold and clip lights** — a thin line marks each channel's recent peak, the tip of the bar glows orange-red above −4 dB, and the dot at the end lights red for two seconds when a channel hits 0 dB.
-- **Colours** — Yellow, Green, Blue, Pink, your system accent colour, or Monochrome. Adapts to light and dark menu bars.
-- **Light on resources** — about 2% of one CPU core while audio plays, close to nothing when it's silent, and around 15 MB of memory.
+- **Per-app volume** — the menu has a volume slider for every app that's playing, so you can turn one down without touching the rest. MenuMeter remembers each app's volume.
+- **Colours** — Yellow, Green, Blue, Pink, your system accent colour, or Monochrome, with saturation and brightness sliders to fine-tune it. Adapts to light and dark menu bars.
+- **Light on resources** — about 2% of one CPU core while audio plays, close to nothing when it's silent, and around 25 MB of memory.
 - **Open at Login** — one click in the menu.
 - **Nothing is recorded** — audio is only measured to draw the meter, never stored or sent anywhere.
 
@@ -44,13 +45,13 @@ open /Applications/MenuMeter.app
 
 ## Usage
 
-Click the meter for the menu: choose a **Color**, turn on **Smooth Animation (60 fps)** or **Open at Login**, or **Quit**. To move the meter, hold ⌘ and drag it; macOS remembers the spot.
+Click the meter for the menu: set the volume of any app that's playing, choose a **Color** and fine-tune its saturation and brightness, turn on **Smooth Animation (60 fps)** or **Open at Login**, or **Quit**. To move the meter, hold ⌘ and drag it; macOS remembers the spot.
 
 MenuMeter is cheap to run: about 2% of one CPU core while audio plays at 30 fps (3% at 60 fps), and close to nothing when it's silent. It moves Core Animation layers instead of redrawing, because every redraw makes macOS re-render a copy of the menu bar item for each display.
 
 ## Customizing
 
-Everything lives in [`main.swift`](main.swift):
+The meter lives in [`main.swift`](main.swift), per-app volume in [`AppVolume.swift`](AppVolume.swift):
 
 - **Size and position** — `barWidth`, `barHeight`, `gap`, `dot` and `verticalOffset` in `MeterView`.
 - **Colours** — the `MeterColor` enum.
@@ -60,7 +61,7 @@ Run `./build.sh` again after any change. Each rebuild is a new ad-hoc signature,
 
 ## How it works
 
-MenuMeter creates a private, global stereo [Core Audio process tap](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps), wraps it in a private aggregate device clocked by your current output, and reads the peak level of each channel on the audio thread. The menu bar view redraws 30 times a second with fast attack, smooth release (about 24 dB/s) and a 1.2-second peak hold.
+MenuMeter creates a private, global stereo [Core Audio process tap](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps), wraps it in a private aggregate device clocked by your current output, and reads the peak level of each channel on the audio thread. To change an app's volume, MenuMeter taps just that app, which silences its normal output, and plays the tapped audio at the volume you set. At 100% the app is left alone. The meter updates 30 times a second (60 with Smooth Animation) with fast attack, smooth release (about 24 dB/s) and a 1.2-second peak hold.
 
 The look is inspired by the menu bar meter in Rogue Amoeba's Audio Hijack. MenuMeter is not affiliated with Rogue Amoeba.
 

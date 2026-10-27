@@ -11,12 +11,12 @@ mkdir -p "$APP/Contents/MacOS"
 cp Info.plist "$APP/Contents/Info.plist"
 
 if [[ "${1:-}" == "--release" ]]; then
-    swiftc -O -target arm64-apple-macos14.2 main.swift -o "$BIN.arm64"
-    swiftc -O -target x86_64-apple-macos14.2 main.swift -o "$BIN.x86_64"
+    swiftc -O -target arm64-apple-macos14.2 *.swift -o "$BIN.arm64"
+    swiftc -O -target x86_64-apple-macos14.2 *.swift -o "$BIN.x86_64"
     lipo -create "$BIN.arm64" "$BIN.x86_64" -output "$BIN"
     rm "$BIN.arm64" "$BIN.x86_64"
 else
-    swiftc -O -target "$(uname -m)-apple-macos14.2" main.swift -o "$BIN"
+    swiftc -O -target "$(uname -m)-apple-macos14.2" *.swift -o "$BIN"
 fi
 
 codesign --force --sign - "$APP"
