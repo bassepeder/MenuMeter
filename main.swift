@@ -188,6 +188,9 @@ enum MeterColor: String, CaseIterable {
 
 // MARK: - Menu bar view
 
+/// Draws the meter with Core Animation layers. Moving layers is nearly free, whereas redrawing
+/// the view makes AppKit CPU-render a copy of the menu bar item for every replica it keeps
+/// (other displays, other menu bar states). Replicas are refreshed separately, see `AppDelegate`.
 final class MeterView: NSView {
     var channels = [Channel(), Channel()]
     var now: TimeInterval = 0
@@ -200,10 +203,74 @@ final class MeterView: NSView {
     static let verticalOffset: CGFloat = 1.5 // nudge down to line up with Audio Hijack's meter
     static let width = barWidth + dotSpacing + dot
 
+    private struct Bar {
+        let track = CALayer()               // rounded background, clips everything inside it
+        let fill = CALayer()                // cut to the current level
+        let gradient = CAGradientLayer()    // spans the whole bar, so colours stay put as the level moves
+        let tick = CALayer()                // peak hold
+        let dot = CALayer()                 // clip light
+    }
+    private let bars = [Bar(), Bar()]
+
+    /// What's currently on screen, in half-point steps, so unchanged frames can be skipped.
+    private(set) var drawn: [Int] = []
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        for bar in bars {
+            bar.track.cornerRadius = Self.barHeight / 2
+            bar.track.masksToBounds = true
+            bar.fill.masksToBounds = true
+            bar.gradient.startPoint = CGPoint(x: 0, y: 0.5)
+            bar.gradient.endPoint = CGPoint(x: 1, y: 0.5)
+            bar.gradient.locations = [0, 0.9, 1] // turns orange/red over the top 4 dB
+            bar.dot.cornerRadius = Self.dot / 2
+            bar.fill.addSublayer(bar.gradient)
+            bar.track.addSublayer(bar.fill)
+            bar.track.addSublayer(bar.tick)
+            layer?.addSublayer(bar.track)
+            layer?.addSublayer(bar.dot)
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func snapshot() -> [Int] {
+        channels.flatMap { channel in [
+            Int((CGFloat(channel.level) * Self.barWidth * 2).rounded()),
+            channel.hold > 0.02 ? Int((CGFloat(channel.hold) * Self.barWidth * 2).rounded()) : 0,
+            channel.clipped(now) ? 1 : 0,
+        ] }
+    }
+
+    /// True when the meter shows nothing and has nothing left to animate.
+    var isSettled: Bool { drawn.allSatisfy { $0 == 0 } && snapshot() == drawn }
+
     override var isFlipped: Bool { true }
+    override var wantsUpdateLayer: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil } // let the status button handle clicks
 
-    override func draw(_ dirtyRect: NSRect) {
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    override func layout() {
+        super.layout()
+        update()
+    }
+
+    // Runs when the view is marked for display, which is also what refreshes the replicas.
+    override func updateLayer() {
+        update()
+    }
+
+    /// Moves the layers to match `channels`. Cheap: no drawing, and replicas are left alone.
+    func update() {
+        drawn = snapshot()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         effectiveAppearance.performAsCurrentDrawingAppearance {
             let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             let track = dark ? NSColor.white.withAlphaComponent(0.88) : NSColor.black.withAlphaComponent(0.18)
@@ -217,39 +284,21 @@ final class MeterView: NSView {
             let top = ((bounds.height - total) / 2).rounded() + Self.verticalOffset
             let x = ((bounds.width - Self.width) / 2).rounded()
 
-            for (i, channel) in channels.enumerated() {
+            for (i, (bar, channel)) in zip(bars, channels).enumerated() {
                 let y = top + CGFloat(i) * (Self.barHeight + Self.gap)
-                let bar = NSRect(x: x, y: y, width: Self.barWidth, height: Self.barHeight)
-                let radius = Self.barHeight / 2
-
-                track.setFill()
-                NSBezierPath(roundedRect: bar, xRadius: radius, yRadius: radius).fill()
-
-                NSGraphicsContext.saveGraphicsState()
-                NSBezierPath(roundedRect: bar, xRadius: radius, yRadius: radius).addClip()
-                let filled = Self.barWidth * CGFloat(channel.level)
-                if filled > 0 {
-                    // Turns orange/red over the top 6 dB, like a hot signal should.
-                    let gradient = NSGradient(colorsAndLocations:
-                        (fill, 0), (fill, 0.9), (hot, 1.0))!
-                    NSGraphicsContext.saveGraphicsState()
-                    NSBezierPath(rect: NSRect(x: x, y: y, width: filled, height: Self.barHeight)).addClip()
-                    gradient.draw(in: bar, angle: 0)
-                    NSGraphicsContext.restoreGraphicsState()
-                }
-                if channel.hold > 0.02 {
-                    tick.setFill()
-                    let hx = x + Self.barWidth * CGFloat(channel.hold) - 1.5
-                    NSRect(x: max(x, hx), y: y, width: 1.5, height: Self.barHeight).fill()
-                }
-                NSGraphicsContext.restoreGraphicsState()
-
-                // Clip indicator dot.
-                (channel.clipped(now) ? hot : track).setFill()
-                let dot = NSRect(x: x + Self.barWidth + Self.dotSpacing, y: y, width: Self.dot, height: Self.barHeight)
-                NSBezierPath(ovalIn: dot).fill()
+                bar.track.frame = NSRect(x: x, y: y, width: Self.barWidth, height: Self.barHeight)
+                bar.track.backgroundColor = track.cgColor
+                bar.fill.frame = NSRect(x: 0, y: 0, width: Self.barWidth * CGFloat(channel.level), height: Self.barHeight)
+                bar.gradient.frame = NSRect(x: 0, y: 0, width: Self.barWidth, height: Self.barHeight)
+                bar.gradient.colors = [fill.cgColor, fill.cgColor, hot.cgColor]
+                bar.tick.isHidden = channel.hold <= 0.02
+                bar.tick.frame = NSRect(x: max(0, Self.barWidth * CGFloat(channel.hold) - 1.5), y: 0, width: 1.5, height: Self.barHeight)
+                bar.tick.backgroundColor = tick.cgColor
+                bar.dot.frame = NSRect(x: x + Self.barWidth + Self.dotSpacing, y: y, width: Self.dot, height: Self.barHeight)
+                bar.dot.backgroundColor = (channel.clipped(now) ? hot : track).cgColor
             }
         }
+        CATransaction.commit()
     }
 }
 
@@ -258,7 +307,7 @@ final class MeterView: NSView {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let tap = SystemAudioTap()
     private var statusItem: NSStatusItem!
-    private let meter = MeterView()
+    private let meter = MeterView(frame: .zero)
     private var timer: Timer?
     private var lastTick = ProcessInfo.processInfo.systemUptime
 
@@ -285,14 +334,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let colorItem = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
         colorItem.submenu = colors
         menu.addItem(colorItem)
+
+        let smooth = NSMenuItem(title: "Smooth Animation (60 fps)", action: #selector(toggleSmooth(_:)), keyEquivalent: "")
+        smooth.target = self
+        menu.addItem(smooth)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit MenuMeter", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         menu.delegate = self
         statusItem.menu = menu
 
         tap.start()
+        setFrameRate(Self.activeRate)
+    }
 
-        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.tick() }
+    // Animate at full rate while there's sound; poll slowly while silent.
+    private static var activeRate: Double { UserDefaults.standard.bool(forKey: "smooth") ? 60 : 30 }
+    private static let idleRate: Double = 10
+
+    private func setFrameRate(_ rate: Double) {
+        guard timer?.timeInterval != 1 / rate else { return }
+        timer?.invalidate()
+        let timer = Timer(timeInterval: 1 / rate, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
@@ -308,13 +370,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         meter.channels[0].update(peak: peaks.left, now: now, dt: dt)
         meter.channels[1].update(peak: peaks.right, now: now, dt: dt)
         meter.now = now
-        meter.needsDisplay = true
+        if meter.snapshot() != meter.drawn {
+            meter.update()
+            refreshReplicasIfDue(now)
+        }
+        let silent = max(peaks.left, peaks.right) < 0.01 // below the meter's −40 dB floor
+        setFrameRate(silent && meter.isSettled ? Self.idleRate : Self.activeRate)
+    }
+
+    // Replicas of the menu bar item (on other displays, for example) only change when the view
+    // redraws, and each redraw CPU-renders all of them. Refresh them at 10 fps while one is on a
+    // screen, otherwise once a second, plus once when the meter falls silent so none is left stale.
+    private var replicasOnScreen = false
+    private var lastReplicaCheck: TimeInterval = 0
+    private var lastReplicaRefresh: TimeInterval = 0
+
+    private func refreshReplicasIfDue(_ now: TimeInterval) {
+        if now - lastReplicaCheck >= 1 {
+            lastReplicaCheck = now
+            let main = statusItem.button?.window
+            replicasOnScreen = NSApp.windows.contains { window in
+                window !== main && NSStringFromClass(type(of: window)) == "NSStatusBarWindow"
+                    && NSScreen.screens.contains { $0.frame.intersects(window.frame) }
+            }
+        }
+        let interval: TimeInterval = replicasOnScreen ? 0.1 : 1
+        if now - lastReplicaRefresh >= interval || meter.drawn.allSatisfy({ $0 == 0 }) {
+            lastReplicaRefresh = now
+            meter.needsDisplay = true
+        }
     }
 
     @objc private func chooseColor(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let color = MeterColor(rawValue: raw) else { return }
         MeterColor.current = color
         meter.needsDisplay = true
+    }
+
+    @objc private func toggleSmooth(_ sender: NSMenuItem) {
+        UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: "smooth"), forKey: "smooth")
+        setFrameRate(Self.activeRate)
     }
 
     @objc private func toggleLogin(_ sender: NSMenuItem) {
@@ -333,6 +428,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 extension AppDelegate: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         menu.items.first?.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.items.first { $0.action == #selector(toggleSmooth(_:)) }?.state =
+            UserDefaults.standard.bool(forKey: "smooth") ? .on : .off
         let current = MeterColor.current.rawValue
         for item in menu.items.compactMap(\.submenu).flatMap(\.items) {
             item.state = item.representedObject as? String == current ? .on : .off

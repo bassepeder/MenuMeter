@@ -2,6 +2,8 @@
 
 A tiny, free stereo level meter for the macOS menu bar. It shows how loud everything your Mac is playing is, live, with two slim bars — one per channel.
 
+![MenuMeter in the menu bar, metering a stereo test tone, next to CPU and RAM meters and the clock](docs/screenshot.png)
+
 - **Whole-system audio** — meters every app at once, on whatever output you're using (speakers, headphones, AirPods). Switches automatically when you change output.
 - **No extra drivers** — uses the Core Audio process taps built into macOS 14.2+. Nothing like BlackHole or Loopback needed.
 - **Peak hold and clip lights** — a thin line marks each channel's recent peak, the tip of the bar glows orange-red above −4 dB, and the dot at the end lights red for two seconds when a channel hits 0 dB.
@@ -35,12 +37,15 @@ Needs the Xcode Command Line Tools (`xcode-select --install`).
 git clone https://github.com/bassepeder/MenuMeter.git
 cd MenuMeter
 ./build.sh
-open MenuMeter.app
+ditto MenuMeter.app /Applications/MenuMeter.app
+open /Applications/MenuMeter.app
 ```
 
 ## Usage
 
-Click the meter for the menu: choose a **Color**, turn on **Open at Login**, or **Quit**.
+Click the meter for the menu: choose a **Color**, turn on **Smooth Animation (60 fps)** or **Open at Login**, or **Quit**. To move the meter, hold ⌘ and drag it; macOS remembers the spot.
+
+MenuMeter is cheap to run: about 2% of one CPU core while audio plays at 30 fps (3% at 60 fps), and close to nothing when it's silent. It moves Core Animation layers instead of redrawing, because every redraw makes macOS re-render a copy of the menu bar item for each display.
 
 ## Customizing
 
